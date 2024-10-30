@@ -11,6 +11,26 @@ from torch.nn.utils.rnn import pad_sequence
 import jieba
 from pypinyin import lazy_pinyin, Style
 
+import sys
+path_to_add = '/project/tts/students/yining_ws/multi_lng/F5-TTS/src'
+# Check if the path is already in sys.path
+if path_to_add not in sys.path:
+    sys.path.append(path_to_add)
+    print(f"Added {path_to_add} to sys.path")
+else:
+    print(f"{path_to_add} is already in sys.path")
+
+
+# custion pad_sequence for onnx export
+def custom_pad_sequence(sequences, padding_value=0, batch_first=True):
+    max_len = max([s.size(0) for s in sequences])
+    out_tensors = []
+    for tensor in sequences:
+        padding_size = max_len - tensor.size(0)
+        padded = torch.nn.functional.pad(tensor, (0, 0, 0, padding_size), value=padding_value)
+        out_tensors.append(padded)
+    return torch.stack(out_tensors, dim=0)
+
 
 # seed everything
 
@@ -110,9 +130,13 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
     """
     if tokenizer in ["pinyin", "char"]:
         tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/vocab.txt")
+    
         with open(tokenizer_path, "r", encoding="utf-8") as f:
             vocab_char_map = {}
             for i, char in enumerate(f):
+                # print(f"#{char}#")
+                # to remove the line changing icon
+                # print(f"#{char[:-1]}#")
                 vocab_char_map[char[:-1]] = i
         vocab_size = len(vocab_char_map)
         assert vocab_char_map[" "] == 0, "make sure space is of idx 0 in vocab.txt, cuz 0 is used for unknown char"
@@ -131,8 +155,28 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
     return vocab_char_map, vocab_size
 
 
-# convert char to pinyin
 
+def clean_the_vocab(tokenizer_path):
+    with open(tokenizer_path, "r", encoding="utf-8") as f:
+        vocab_char_map = {}
+        vocab_char_map[" "] = 0
+        idx = 1
+        for i, char in enumerate(f):
+            # print(f"#{char[:-1]}#")
+            if char[:-1]!=" " and char[:-1] not in list(vocab_char_map.keys()):
+                vocab_char_map[char[:-1]] = idx
+                idx+=1
+
+        
+    print('debug: ', vocab_char_map)
+    # Write each character to a new line in the file
+    with open(tokenizer_path, "w") as f:
+        for vocab in list(vocab_char_map.keys()):
+            f.write(vocab + "\n")  # Ensure each character is on a new line
+
+
+
+# convert char to pinyin
 
 def convert_char_to_pinyin(text_list, polyphone=True):
     final_text_list = []
@@ -183,3 +227,16 @@ def repetition_found(text, length=2, tolerance=10):
         if count > tolerance:
             return True
     return False
+
+
+def main():
+    text_list = ["This 15 sample text contains laughing \n emojis 😀 😃 😄 😁 😆 😅 😂 🤣", "I love bitte lemon.", "我很喜欢猫。"]
+    final_text_list = convert_char_to_pinyin(text_list)
+    print('final_text_list: ', final_text_list)
+    dataset_name = "bigc_bem"
+    get_tokenizer(dataset_name, tokenizer="char")
+
+
+if __name__ == "__main__":
+    # Code to run when the script is executed directly
+    main()

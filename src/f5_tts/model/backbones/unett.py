@@ -175,9 +175,14 @@ class UNetT(nn.Module):
         if time.ndim == 0:
             time = time.repeat(batch)
 
+        # print('x.dtype: ', x.dtype)
         # t: conditioning time, c: context (text + masked cond audio), x: noised input audio
+        time = time.to(x.dtype)
         t = self.time_embed(time)
         text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
+
+        cond = cond.to(x.dtype)
+        text_embed = text_embed.to(x.dtype)
         x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
 
         # postfix time t to input x, [b n d] -> [b n+1 d]

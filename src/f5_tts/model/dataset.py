@@ -1,15 +1,14 @@
 import json
-import random
 from importlib.resources import files
-from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
 import torchaudio
+from datasets import Dataset as Dataset_
+from datasets import load_from_disk
 from torch import nn
 from torch.utils.data import Dataset, Sampler
-from datasets import load_from_disk
-from datasets import Dataset as Dataset_
+from tqdm import tqdm
 
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import default
@@ -22,12 +21,21 @@ class HFDataset(Dataset):
         target_sample_rate=24_000,
         n_mel_channels=100,
         hop_length=256,
+        n_fft=1024,
+        win_length=1024,
+        mel_spec_type="vocos",
     ):
         self.data = hf_dataset
         self.target_sample_rate = target_sample_rate
         self.hop_length = hop_length
+
         self.mel_spectrogram = MelSpec(
-            target_sample_rate=target_sample_rate, n_mel_channels=n_mel_channels, hop_length=hop_length
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=win_length,
+            n_mel_channels=n_mel_channels,
+            target_sample_rate=target_sample_rate,
+            mel_spec_type=mel_spec_type,
         )
 
     def get_frame_len(self, index):
@@ -79,6 +87,9 @@ class CustomDataset(Dataset):
         target_sample_rate=24_000,
         hop_length=256,
         n_mel_channels=100,
+        n_fft=1024,
+        win_length=1024,
+        mel_spec_type="vocos",
         preprocessed_mel=False,
         mel_spec_module: nn.Module | None = None,
     ):
@@ -86,15 +97,22 @@ class CustomDataset(Dataset):
         self.durations = durations
         self.target_sample_rate = target_sample_rate
         self.hop_length = hop_length
+        self.n_fft = n_fft
+        self.win_length = win_length
+        self.mel_spec_type = mel_spec_type
         self.preprocessed_mel = preprocessed_mel
 
+        # print("target_samplingrate: ", target_sample_rate)
         if not preprocessed_mel:
             self.mel_spectrogram = default(
                 mel_spec_module,
                 MelSpec(
-                    target_sample_rate=target_sample_rate,
+                    n_fft=n_fft,
                     hop_length=hop_length,
+                    win_length=win_length,
                     n_mel_channels=n_mel_channels,
+                    target_sample_rate=target_sample_rate,
+                    mel_spec_type=mel_spec_type,
                 ),
             )
 
@@ -109,55 +127,63 @@ class CustomDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, index):
-        row = self.data[index]
-        audio_path = row["audio_path"]
-        text = row["text"]
-        duration = row["duration"]
+        while True:
+            row = self.data[index]
+            audio_path = row["audio_path"]
+            text = row["text"]
+            duration = row["duration"]
+
+            # filter by given length
+            if 0.3 <= duration <= 30:
+                break  # valid
+
+            index = (index + 1) % len(self.data)
 
         if self.preprocessed_mel:
             mel_spec = torch.tensor(row["mel_spec"])
-
         else:
             audio, source_sample_rate = torchaudio.load(audio_path)
+
+            # make sure mono input
             if audio.shape[0] > 1:
                 audio = torch.mean(audio, dim=0, keepdim=True)
 
-            if duration > 30 or duration < 0.3:
-                return self.__getitem__((index + 1) % len(self.data))
-
+            # resample if necessary
             if source_sample_rate != self.target_sample_rate:
                 resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
                 audio = resampler(audio)
 
+            # to mel spectrogram
             mel_spec = self.mel_spectrogram(audio)
-            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t')
+            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
 
-        return dict(
-            mel_spec=mel_spec,
-            text=text,
-        )
-
+        return {
+            "mel_spec": mel_spec,
+            "text": text,
+        }
 
 # Dynamic Batch Sampler
-
-
 class DynamicBatchSampler(Sampler[list[int]]):
     """Extension of Sampler that will do the following:
     1.  Change the batch size (essentially number of sequences)
         in a batch to ensure that the total number of frames are less
         than a certain threshold.
     2.  Make sure the padding efficiency in the batch is high.
+    3.  Shuffle batches each epoch while maintaining reproducibility.
     """
 
     def __init__(
-        self, sampler: Sampler[int], frames_threshold: int, max_samples=0, random_seed=None, drop_last: bool = False
+        self, sampler: Sampler[int], frames_threshold: int, max_samples=0, random_seed=None, drop_last: bool = False, data_source=None
     ):
         self.sampler = sampler
         self.frames_threshold = frames_threshold
         self.max_samples = max_samples
+        self.random_seed = random_seed
+        self.epoch = 0
 
         indices, batches = [], []
-        data_source = self.sampler.data_source
+        if not data_source:
+            data_source = self.sampler.data_source
 
         for idx in tqdm(
             self.sampler, desc="Sorting with sampler... if slow, check whether dataset is provided with duration"
@@ -187,25 +213,29 @@ class DynamicBatchSampler(Sampler[list[int]]):
             batches.append(batch)
 
         del indices
-
-        # if want to have different batches between epochs, may just set a seed and log it in ckpt
-        # cuz during multi-gpu training, although the batch on per gpu not change between epochs, the formed general minibatch is different
-        # e.g. for epoch n, use (random_seed + n)
-        random.seed(random_seed)
-        random.shuffle(batches)
-
         self.batches = batches
 
+    def set_epoch(self, epoch: int) -> None:
+        """Sets the epoch for this sampler."""
+        self.epoch = epoch
+
     def __iter__(self):
-        return iter(self.batches)
+        # Use both random_seed and epoch for deterministic but different shuffling per epoch
+        if self.random_seed is not None:
+            g = torch.Generator()
+            g.manual_seed(self.random_seed + self.epoch)
+            # Use PyTorch's random permutation for better reproducibility across PyTorch versions
+            indices = torch.randperm(len(self.batches), generator=g).tolist()
+            batches = [self.batches[i] for i in indices]
+        else:
+            batches = self.batches
+        return iter(batches)
 
     def __len__(self):
         return len(self.batches)
 
 
 # Load dataset
-
-
 def load_dataset(
     dataset_name: str,
     tokenizer: str = "pinyin",
@@ -213,6 +243,7 @@ def load_dataset(
     audio_type: str = "raw",
     mel_spec_module: nn.Module | None = None,
     mel_spec_kwargs: dict = dict(),
+    is_valid: bool = False
 ) -> CustomDataset | HFDataset:
     """
     dataset_type    - "CustomDataset" if you want to use tokenizer name and default data path to load for train_dataset
@@ -222,12 +253,16 @@ def load_dataset(
     print("Loading dataset ...")
 
     if dataset_type == "CustomDataset":
-        rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
+        rel_data_path = f"/export/data1/data/yliu/checkpoints/e2tts/iwslt25/dataset/{dataset_name}_{tokenizer}"
+        # rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
         if audio_type == "raw":
             try:
                 train_dataset = load_from_disk(f"{rel_data_path}/raw")
             except:  # noqa: E722
-                train_dataset = Dataset_.from_file(f"{rel_data_path}/raw.arrow")
+                if not is_valid:
+                    train_dataset = Dataset_.from_file(f"{rel_data_path}/raw.arrow")
+                else:
+                    train_dataset = Dataset_.from_file(f"{rel_data_path}/valid_raw.arrow")
             preprocessed_mel = False
         elif audio_type == "mel":
             train_dataset = Dataset_.from_file(f"{rel_data_path}/mel.arrow")

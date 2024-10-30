@@ -6,8 +6,12 @@ data/
 ckpts/
 wandb/
 results/
-
-
+dataset/
+emilia/
+data/
+outputs/
+inputs/
+preprocessed_data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

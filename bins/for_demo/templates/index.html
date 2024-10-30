@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text-to-Speech Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Text-to-Speech Demo</h1>
+        <textarea id="textInput" placeholder="Enter text to convert to speech"></textarea>
+        <div class="controls">
+            <button id="convertButton">Convert to Speech</button>
+            <input type="number" id="speedInput" min="0.5" max="2" step="0.1" value="1.0">
+            <label for="speedInput">Speed</label>
+        </div>
+        <audio id="audioPlayer" controls>
+            Your browser does not support the audio element.
+        </audio>
+    </div>
+
+    <script>
+        document.getElementById('convertButton').addEventListener('click', convertToSpeech);
+
+        async function convertToSpeech() {
+            const text = document.getElementById('textInput').value;
+            const speed = document.getElementById('speedInput').value;
+
+            const formData = new FormData();
+            formData.append('text', text);
+            formData.append('speed', speed);
+
+            try {
+                const response = await fetch('http://192.168.0.64:5053/tts/infer/e2tts', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const audio = data.audio;
+
+                const audioSrc = `data:audio/wav;base64,${audio}`;
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = audioSrc;
+                audioPlayer.play();
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred while converting text to speech.');
+            }
+        }
+    </script>
+</body>
+</html>
