@@ -1,12 +1,10 @@
 # from huggingface_hub import HfFolder
 # print(HfFolder().cache_home)
 # import os
-# os.environ["HUGGINGFACE_TOKEN"] = "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"
 # os.environ['HF_HOME'] = "/project/tts/students/yining_ws/multi_lng/F5-TTS/dataset/"
 # print(os.environ.get('HF_HOME'))
 # from datasets import load_dataset
 # path = "DE/*.tar"
-# dataset = load_dataset("amphion/Emilia-Dataset", use_auth_token="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", data_files={"de": path}, split="de", streaming=False, cache_dir="/project/tts/students/yining_ws/multi_lng/F5-TTS/dataset/")
 # print(dataset.cache_files)
 # print(dataset) # here should only shows 90 n_shards instead of 2360
 # print(next(iter(dataset['train'])))
