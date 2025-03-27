@@ -66,7 +66,6 @@ class Trainer:
             gradient_accumulation_steps=grad_accumulation_steps,
             **accelerate_kwargs,
         )
-
         # Calculate a unique seed for each process
         process_seed = resumable_with_seed + self.accelerator.process_index
         # Set the seed for this process
@@ -418,6 +417,8 @@ class Trainer:
             skipped_dataloader = self.accelerator.skip_first_batches(train_dataloader, num_batches=skipped_batch)
         else:
             skipped_epoch = 0
+        
+        epochs = 10000
 
         for epoch in range(skipped_epoch, epochs):
             self.model.train()

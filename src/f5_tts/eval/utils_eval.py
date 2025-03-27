@@ -2,15 +2,31 @@ import math
 import os
 import random
 import string
-from tqdm import tqdm
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 import torchaudio
+from tqdm import tqdm
 
+from f5_tts.eval.ecapa_tdnn import ECAPA_TDNN_SMALL
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import convert_char_to_pinyin
-from f5_tts.eval.ecapa_tdnn import ECAPA_TDNN_SMALL
+
+# seedtts testset metainfo: utt, prompt_text, prompt_wav, gt_text, gt_wav
+def get_iwslt25_bem_testset_metainfo(metalst):
+    f = open(metalst)
+    lines = f.readlines()
+    f.close()
+    metainfo = []
+    for idx, line in enumerate(lines):
+        if len(line.strip().split("|")) == 3:
+            gt_text, prompt_wav, prompt_text = line.strip().split("|")
+            utt = "augmented_"+str(idx)
+            gt_wav = None
+        metainfo.append((utt, prompt_text, prompt_wav, gt_text, gt_wav))
+    return metainfo
+
 
 
 # seedtts testset metainfo: utt, prompt_text, prompt_wav, gt_text, gt_wav
@@ -74,8 +90,11 @@ def get_inference_prompt(
     tokenizer="pinyin",
     polyphone=True,
     target_sample_rate=24000,
+    n_fft=1024,
+    win_length=1024,
     n_mel_channels=100,
     hop_length=256,
+    mel_spec_type="vocos",
     target_rms=0.1,
     use_truth_duration=False,
     infer_batch_size=1,
@@ -94,8 +113,16 @@ def get_inference_prompt(
     )
 
     mel_spectrogram = MelSpec(
-        target_sample_rate=target_sample_rate, n_mel_channels=n_mel_channels, hop_length=hop_length
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        n_mel_channels=n_mel_channels,
+        target_sample_rate=target_sample_rate,
+        mel_spec_type=mel_spec_type,
     )
+
+    filelist = "/project/tts/students/yining_ws/multi_lng/F5-TTS/inputs/iwslt25/exception_toolong.txt"
+    exception_list = []
 
     for utt, prompt_text, prompt_wav, gt_text, gt_wav in tqdm(metainfo, desc="Processing prompts..."):
         # Audio
@@ -131,7 +158,12 @@ def get_inference_prompt(
         else:
             ref_text_len = len(prompt_text.encode("utf-8"))
             gen_text_len = len(gt_text.encode("utf-8"))
+            # print('ref_mel_len: ', ref_mel_len)
+            # print('gt_text: ', gt_text)
+            # print('ref_text_len ', ref_text_len)
+            # print('speed ', speed)
             total_mel_len = ref_mel_len + int(ref_mel_len / ref_text_len * gen_text_len / speed)
+            # print('total_mel_len ', total_mel_len)
 
         # to mel spectrogram
         ref_mel = mel_spectrogram(ref_audio)
@@ -139,9 +171,14 @@ def get_inference_prompt(
 
         # deal with batch
         assert infer_batch_size > 0, "infer_batch_size should be greater than 0."
-        assert (
-            min_tokens <= total_mel_len <= max_tokens
-        ), f"Audio {utt} has duration {total_mel_len*hop_length//target_sample_rate}s out of range [{min_secs}, {max_secs}]."
+        # assert min_tokens <= total_mel_len <= max_tokens, (
+        #     f"Audio {utt} has duration {total_mel_len * hop_length // target_sample_rate}s out of range [{min_secs}, {max_secs}]."
+        # )
+        if min_tokens > total_mel_len or total_mel_len > max_tokens:
+            print(f"Audio {utt} has duration {total_mel_len * hop_length // target_sample_rate}s out of range [{min_secs}, {max_secs}].")
+            exception_list.append("|".join([f"augmented_{utt}.wav", gt_text, prompt_wav, prompt_text]))
+            continue
+
         bucket_i = math.floor((total_mel_len - min_tokens) / (max_tokens - min_tokens + 1) * num_buckets)
 
         utts[bucket_i].append(utt)
@@ -174,7 +211,7 @@ def get_inference_prompt(
                 total_mel_lens[bucket_i],
                 final_text_list[bucket_i],
             ) = [], [], [], [], [], []
-
+    
     # add residual
     for bucket_i, bucket_frames in enumerate(batch_accum):
         if bucket_frames > 0:
@@ -191,6 +228,11 @@ def get_inference_prompt(
     # not only leave easy work for last workers
     random.seed(666)
     random.shuffle(prompts_all)
+
+    with open(filelist, 'w', encoding='utf-8') as txtfile:
+        txtfile.write("gen_audio|gen_text|ref_audio|ref_text" + '\n')
+        for result in exception_list:
+            txtfile.write(result + '\n')
 
     return prompts_all
 
@@ -312,7 +354,7 @@ def run_asr_wer(args):
     from zhon.hanzi import punctuation
 
     punctuation_all = punctuation + string.punctuation
-    wers = []
+    wer_results = []
 
     from jiwer import compute_measures
 
@@ -327,8 +369,8 @@ def run_asr_wer(args):
             for segment in segments:
                 hypo = hypo + " " + segment.text
 
-        # raw_truth = truth
-        # raw_hypo = hypo
+        raw_truth = truth
+        raw_hypo = hypo
 
         for x in punctuation_all:
             truth = truth.replace(x, "")
@@ -352,9 +394,16 @@ def run_asr_wer(args):
         # dele = measures["deletions"] / len(ref_list)
         # inse = measures["insertions"] / len(ref_list)
 
-        wers.append(wer)
+        wer_results.append(
+            {
+                "wav": Path(gen_wav).stem,
+                "truth": raw_truth,
+                "hypo": raw_hypo,
+                "wer": wer,
+            }
+        )
 
-    return wers
+    return wer_results
 
 
 # SIM Evaluation
@@ -373,10 +422,10 @@ def run_sim(args):
         model = model.cuda(device)
     model.eval()
 
-    sim_list = []
-    for wav1, wav2, truth in tqdm(test_set):
-        wav1, sr1 = torchaudio.load(wav1)
-        wav2, sr2 = torchaudio.load(wav2)
+    sim_results = []
+    for gen_wav, prompt_wav, truth in tqdm(test_set):
+        wav1, sr1 = torchaudio.load(gen_wav)
+        wav2, sr2 = torchaudio.load(prompt_wav)
 
         resample1 = torchaudio.transforms.Resample(orig_freq=sr1, new_freq=16000)
         resample2 = torchaudio.transforms.Resample(orig_freq=sr2, new_freq=16000)
@@ -392,6 +441,11 @@ def run_sim(args):
 
         sim = F.cosine_similarity(emb1, emb2)[0].item()
         # print(f"VSim score between two audios: {sim:.4f} (-1.0, 1.0).")
-        sim_list.append(sim)
+        sim_results.append(
+            {
+                "wav": Path(gen_wav).stem,
+                "sim": sim,
+            }
+        )
 
-    return sim_list
+    return sim_results

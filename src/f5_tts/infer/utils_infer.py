@@ -46,7 +46,7 @@ device = (
 
 # -----------------------------------------
 
-target_sample_rate = 24000
+# target_sample_rate = 24000
 n_mel_channels = 100
 hop_length = 256
 win_length = 1024
@@ -492,8 +492,10 @@ def infer_batch_process(
             audio = audio.half()
 
         local_speed = speed
-        if len(gen_text.encode("utf-8")) < 10:
-            local_speed = 0.3
+        print("local_speed: ", speed)
+        # TODO so evil, why setting a 0.3 as speed control
+        # if len(gen_text.encode("utf-8")) < 10:
+        #     local_speed = 0.3
 
         # Prepare the text
         text_list = [ref_text + gen_text]
@@ -509,6 +511,11 @@ def infer_batch_process(
             ref_text_len = len(ref_text.encode("utf-8"))
             gen_text_len = len(gen_text.encode("utf-8"))
             duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / local_speed)
+            print('ref_audio_len: ', ref_audio_len)
+            print('gen_text_len: ', gen_text_len)
+            print('ref_text_len ', ref_text_len)
+            print('local_speed ', local_speed)
+            print('duration ', duration)
         
         # inference
         with torch.inference_mode():
@@ -516,7 +523,7 @@ def infer_batch_process(
                 cond=audio,
                 text=final_text_list,
                 duration=duration,
-                steps=100,
+                steps=nfe_step,
                 cfg_strength=cfg_strength,
                 sway_sampling_coef=sway_sampling_coef,
             )
@@ -524,8 +531,8 @@ def infer_batch_process(
             generated = generated.to(torch.float32)
             generated = generated[:, ref_audio_len:, :]
             generated_mel_spec = generated.permute(0, 2, 1)
-
-            generated_mel_spec = resample_spectrogram(generated_mel_spec.cpu(), original_sr=16000, target_sr=24000).cuda()
+            # TODO
+            # generated_mel_spec = resample_spectrogram(generated_mel_spec.cpu(), original_sr=16000, target_sr=24000).cuda()
 
             if mel_spec_type == "vocos":
                 generated_wave = vocoder.decode(generated_mel_spec)

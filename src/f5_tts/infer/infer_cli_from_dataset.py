@@ -175,6 +175,10 @@ parser.add_argument(
     "--input_filelist",
     type=str,
 )
+parser.add_argument(
+    "--wav_save_dir",
+    type=str,
+)
 args = parser.parse_args()
 
 
@@ -244,7 +248,7 @@ class E2ttsSynthesiser():
         self.vocoder = load_vocoder(vocoder_name="vocos", is_local=True, local_path="/project/tts/students/yining_ws/multi_lng/F5-TTS/ckpts/voco")
         self.ema_model = load_model(UNetT, model_cfg.model, self.ckpt_file, mel_spec_type=self.vocoder_name, vocab_file=self.vocab_file)
 
-    def infer_one(self, ref_audio, ref_text, gen_text, idx, output_dir):
+    def infer_one(self, ref_audio, ref_text, gen_text, idx, output_dir, gen_audio_path=None):
         main_voice = {"ref_audio": ref_audio, "ref_text": ref_text}
         voices = {"main": main_voice}
 
@@ -305,7 +309,10 @@ class E2ttsSynthesiser():
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
-            wave_path = output_dir+"/augmented_"+str(idx)+".wav"
+            if gen_audio_path:
+                wave_path = output_dir+"/"+gen_audio_path
+            else:
+                wave_path = output_dir+"/augmented_"+str(idx)+".wav"
             with open(wave_path, "wb") as f:
                 sf.write(f.name, final_wave, final_sample_rate)
                 # Remove silence
@@ -321,13 +328,14 @@ class E2ttsSynthesiser():
         print("file_path: ", file_path)
 
         progress_bar = tqdm(
-                range(15000),
+                range(10),
                 desc=f"Audio Files",
                 unit="update",
                 initial=0,
         )
-        start_index = (int(file_path[-1])-1)*15000+1
-        print("start_index: ", start_index)
+        start_index = 0
+        # start_index = (int(file_path[-1])-1)*15000+1
+        # print("start_index: ", start_index)
         # 1----1   2----15001  3-30001 4-45001
 
         results = []
@@ -352,17 +360,48 @@ class E2ttsSynthesiser():
             for result in results:
                 txtfile.write(result + '\n')
 
+    def infer_all_following_idx(self, file_path, wav_save_dir, output_txt_file):
+
+        print("file_path: ", file_path)
+
+        progress_bar = tqdm(
+                range(10),
+                desc=f"Audio Files",
+                unit="update",
+                initial=0,
+        )
+        start_index = 0
+        # start_index = (int(file_path[-1])-1)*15000+1
+        # print("start_index: ", start_index)
+        # 1----1   2----15001  3-30001 4-45001
+
+        # results = []
+        with open(file_path, 'r', encoding='utf-8') as file:
+            for idx, line in enumerate(file):
+                # Strip whitespace and split by '|'
+                split_line = [item.strip().strip('\n') for item in line.strip().split('|')]
+                if len(split_line) == 4:  # Only add non-empty lines
+                    gen_audio, gen_text, ref_audio, ref_text = split_line
+                    items = []
+
+                    _ = self.infer_one(ref_audio, ref_text, gen_text, idx+start_index, wav_save_dir, gen_audio_path=gen_audio)
+                    # items.append(gen_audio)
+                    # items +=split_line
+                    # results.append("|".join(items))
+                    progress_bar.update(1)
+                    # progress_bar.set_postfix(update=str(global_update), loss=loss.item()
+
 
 def main():
     synthesiser = E2ttsSynthesiser(**vars(args))
     ref_audio = "/project/OML/zli/iwslt2024/low_resourced_track/data/bem_eng/training/bigc/bigc/data/bem/audio/26_8819_0_261_01_211112-010515_bem_8f1_elicit_0.wav"
     ref_text = "Abalumendo babili nabeminina bale ikata amabula yafimuti."
     gen_text = "Cifwile uyu ou bali nankwe eulemulanga ifyakucita."
-    wav_save_dir = "/project/tts/students/yining_ws/multi_lng/F5-TTS/outputs/iwslt25_augmented_60000/wavs"
+    # wav_save_dir = "/project/tts/students/yining_ws/multi_lng/F5-TTS/outputs/iwslt25_augmented_60000/wavs"
     # synthesiser.infer_one(ref_audio, ref_text, gen_text, 0, wav_save_dir)
     # txt_file = "/project/tts/students/yining_ws/multi_lng/F5-TTS/inputs/iwslt25/10_with_info.txt"
     output_txt_file = "/project/tts/students/yining_ws/multi_lng/F5-TTS/outputs/iwslt25_augmented_test/filelist.txt"
-    synthesiser.infer_all(args.input_filelist, wav_save_dir, output_txt_file)
+    synthesiser.infer_all_following_idx(args.input_filelist, args.wav_save_dir, output_txt_file)
 
 
 if __name__ == "__main__":
